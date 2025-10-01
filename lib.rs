@@ -13,6 +13,12 @@ mod simple_token {
         balances: Mapping<AccountId, u128>,
         /// Total supply of tokens
         total_supply: u128,
+        /// Allowances for spending (owner, spender) -> amount
+        allowances: Mapping<(AccountId, AccountId), u128>,
+        /// Whether the contract is paused
+        is_paused: bool,
+        /// Blacklist mapping (account -> is_blacklisted)
+        blacklist: Mapping<AccountId, bool>,
     }
 
     /// Custom error types for better error handling
@@ -28,6 +34,12 @@ mod simple_token {
         InvalidAmount,
         /// Arithmetic overflow occurred
         Overflow,
+        /// Insufficient allowance for transfer
+        InsufficientAllowance,
+        /// Contract is currently paused
+        ContractPaused,
+        /// Account is blacklisted
+        AccountBlacklisted,
     }
 
     /// Result type alias for cleaner error handling
@@ -60,6 +72,69 @@ mod simple_token {
         pub timestamp: u64,
     }
 
+    /// Event emitted when tokens are burned
+    #[ink(event)]
+    pub struct Burned {
+        /// Account that burned the tokens
+        #[ink(topic)]
+        pub from: AccountId,
+        /// Amount of tokens burned
+        pub amount: u128,
+        /// When the burning happened
+        pub timestamp: u64,
+    }
+
+    /// Event emitted when spending approval is granted
+    #[ink(event)]
+    pub struct Approval {
+        /// Account that owns the tokens
+        #[ink(topic)]
+        pub owner: AccountId,
+        /// Account that can spend the tokens
+        #[ink(topic)]
+        pub spender: AccountId,
+        /// Amount approved for spending
+        pub amount: u128,
+    }
+
+    /// Event emitted when contract is paused
+    #[ink(event)]
+    pub struct Paused {
+        /// Account that paused the contract
+        pub by: AccountId,
+        /// When it was paused
+        pub timestamp: u64,
+    }
+
+    /// Event emitted when contract is unpaused
+    #[ink(event)]
+    pub struct Unpaused {
+        /// Account that unpaused the contract
+        pub by: AccountId,
+        /// When it was unpaused
+        pub timestamp: u64,
+    }
+
+    /// Event emitted when an account is blacklisted
+    #[ink(event)]
+    pub struct Blacklisted {
+        /// Account that was blacklisted
+        #[ink(topic)]
+        pub account: AccountId,
+        /// Account that did the blacklisting
+        pub by: AccountId,
+    }
+
+    /// Event emitted when an account is removed from blacklist
+    #[ink(event)]
+    pub struct Unblacklisted {
+        /// Account that was removed from blacklist
+        #[ink(topic)]
+        pub account: AccountId,
+        /// Account that did the removal
+        pub by: AccountId,
+    }
+
     impl SimpleToken {
         /// Constructor - called once when contract is deployed
         #[ink(constructor)]
@@ -68,7 +143,17 @@ mod simple_token {
                 owner: Self::env().caller(),
                 balances: Mapping::default(),
                 total_supply: 0,
+                allowances: Mapping::default(),
+                is_paused: false,
+                blacklist: Mapping::default(),
             }
+        }
+
+        // ========== PRIVATE HELPER FUNCTIONS ==========
+
+        /// Internal helper to check if account is blacklisted
+        fn check_blacklisted(&self, account: AccountId) -> bool {
+            self.blacklist.get(account).unwrap_or(false)
         }
 
         /// Mint (create) new tokens - only owner can do this
@@ -119,6 +204,16 @@ mod simple_token {
         #[ink(message)]
         pub fn transfer(&mut self, to: AccountId, amount: u128) -> Result<()> {
             let caller = self.env().caller();
+
+            // Check if contract is paused
+            if self.is_paused {
+                return Err(Error::ContractPaused);
+            }
+
+            // Check if caller or recipient is blacklisted
+            if self.check_blacklisted(caller) || self.check_blacklisted(to) {
+                return Err(Error::AccountBlacklisted);
+            }
 
             // Validate: Cannot transfer zero tokens
             if amount == 0 {
