@@ -16,8 +16,9 @@ mod simple_token {
     }
 
     /// Custom error types for better error handling
-    #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
-    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    #[derive(Debug, PartialEq, Eq)]
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
+    #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub enum Error {
         /// Trying to spend more tokens than available
         InsufficientBalance,
@@ -25,6 +26,8 @@ mod simple_token {
         Unauthorized,
         /// Cannot transfer zero tokens
         InvalidAmount,
+        /// Arithmetic overflow occurred
+        Overflow,
     }
 
     /// Result type alias for cleaner error handling
@@ -84,11 +87,16 @@ mod simple_token {
             // Get current balance of the recipient
             let current_balance = self.balances.get(to).unwrap_or(0);
 
-            // Update the balance (add new tokens)
-            self.balances.insert(to, &(current_balance + amount));
+            // Update the balance (add new tokens) with overflow protection
+            let new_balance = current_balance
+                .checked_add(amount)
+                .ok_or(Error::Overflow)?;
+            self.balances.insert(to, &new_balance);
 
-            // Update total supply
-            self.total_supply += amount;
+            // Update total supply with overflow protection
+            self.total_supply = self.total_supply
+                .checked_add(amount)
+                .ok_or(Error::Overflow)?;
 
             // Emit event for transparency
             self.env().emit_event(Minted {
@@ -128,9 +136,16 @@ mod simple_token {
             // Get recipient's balance
             let to_balance = self.balances.get(to).unwrap_or(0);
 
-            // Update balances (subtract from caller, add to recipient)
-            self.balances.insert(caller, &(caller_balance - amount));
-            self.balances.insert(to, &(to_balance + amount));
+            // Update balances with overflow/underflow protection
+            let new_caller_balance = caller_balance
+                .checked_sub(amount)
+                .ok_or(Error::Overflow)?;
+            let new_to_balance = to_balance
+                .checked_add(amount)
+                .ok_or(Error::Overflow)?;
+
+            self.balances.insert(caller, &new_caller_balance);
+            self.balances.insert(to, &new_to_balance);
 
             // Emit event for transparency
             self.env().emit_event(Transfer {
@@ -155,6 +170,4 @@ mod simple_token {
             self.owner
         }
     }
-
-
 }
